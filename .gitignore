@@ -1,0 +1,6 @@
+# Runtime files — never commit these
+config.json
+log.jsonl
+*.log
+.env
+node_modules/

@@ -1,0 +1,12 @@
+{
+  "mode": "shadow",
+  "smallModel": "google/gemini-2.5-flash",
+  "disableReasoning": true,
+  "confidenceGate": 0.9,
+  "noulGate": 0.7,
+  "smallTaskGate": 0.7,
+  "midTier": true,
+  "smallModelTimeoutMs": 10000,
+  "injectLocalResults": true,
+  "injectMaxChars": 500
+}
