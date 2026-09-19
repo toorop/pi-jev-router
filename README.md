@@ -44,6 +44,23 @@ Jev answers
       → pass through to your normal pi model (unchanged behavior)
 ```
 
+### Judgment vs. policy
+
+A key mental model: **Jev does not dispatch — it judges.** Each question measures a *semantic property of the request itself* (can a single command suffice? how ambiguous? what kind of thing is it?). What turns those judgments into a dispatch decision is **this extension's policy layer**: the gates, the tier structure, and the allowlist.
+
+```
+Jev judgment                     →  policy (this code)               →  handler
+noul ≥ 0.7, conf ≥ 0.9           →  "commandable with certainty"     →  strict local execution
+conf ≥ 0.7, category dispatchable →  "probably commandable"           →  mid tier (small LLM)
+everything else                  →  "too risky or too rich"           →  your normal model
+```
+
+This separation has three consequences worth knowing:
+
+1. **Changing routing policy never touches Jev.** When we discovered that `category: chat` requests with high `noul` should reach the mid tier, the fix was one line of policy — not a prompt change. A fork with a different pipeline (no small model, for instance) reuses the same Jev judgments with a different dispatch table.
+2. **Confidence stays a pure signal about the request.** If Jev classified "local / small / big" directly, its confidence would conflate two things: doubt about the request, and doubt about your infrastructure. Separated, it stays interpretable.
+3. **The thresholds are your risk policy.** They live in `config.json` precisely so you can calibrate them against your own logs without touching the judgment layer.
+
 ### Design principles
 
 - **Fail-safe, always.** Every failure path (Jev unreachable, small model down, a command that fails validation) falls through to your normal model. The router can only make things *faster or equal*, never worse.
