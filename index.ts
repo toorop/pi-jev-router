@@ -50,8 +50,11 @@ const DEFAULTS = {
   // Middle tier: when confidence falls below confidenceGate but stays above
   // smallTaskGate, the small LLM (with recent context) either formulates a
   // command or answers directly — the big model is the last resort only.
+  // 0.6 rather than 0.7: a mediocre mid-tier *answer* is cheap to correct
+  // (ask again), unlike a wrongly-executed command — so the answer path
+  // tolerates more doubt. Command safety is still gated elsewhere.
   midTier: true,
-  smallTaskGate: 0.7,
+  smallTaskGate: 0.6,
 };
 
 // Default-deny allowlist of read-only binaries. "git" is subcommand-restricted.
