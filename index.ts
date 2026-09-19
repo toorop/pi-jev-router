@@ -548,7 +548,9 @@ export default function (pi: ExtensionAPI) {
         injectTrace("answered locally", outcome.text);
         if (ctx.ui) {
           ctx.ui.setStatus("jev", `answered · ${latencyJev + latencySmall}ms`);
-          ctx.ui.notify(outcome.text.slice(0, 2500), "info");
+          // The injected trace already displays the answer — notify only
+          // when injection is disabled, to avoid showing it twice.
+          if (!cfg.injectLocalResults) ctx.ui.notify(outcome.text.slice(0, 2500), "info");
         }
         return { action: "handled" };
       }
@@ -588,7 +590,9 @@ export default function (pi: ExtensionAPI) {
       injectTrace(`executed locally\n$ ${cmd}`, output);
       if (ctx.ui) {
         ctx.ui.setStatus("jev", `local: ${cmd.slice(0, 40)} · ${latencyJev + latencySmall}ms`);
-        ctx.ui.notify(`$ ${cmd}\n\n${output.slice(0, 2500) || "(no output)"}`, "info");
+        if (!cfg.injectLocalResults) {
+          ctx.ui.notify(`$ ${cmd}\n\n${output.slice(0, 2500) || "(no output)"}`, "info");
+        }
       }
       return { action: "handled" };
     } catch (e: any) {
