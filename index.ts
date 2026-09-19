@@ -566,7 +566,31 @@ export default function (pi: ExtensionAPI) {
         return { action: "handled" };
       }
 
-      const cmd = outcome.cmd;
+      // SECURITY: mid-tier commands come from a generative model and MUST be
+      // validated like strict ones — default-deny allowlist, no exceptions.
+      // (This hole was caught in testing: a "delete file" request reached the
+      // small model, which refused on its own — never rely on that.)
+      const cmd = strictEligible ? outcome.cmd : validateCommand(outcome.cmd);
+      if (!cmd) {
+        await log({
+          ts: new Date().toISOString(),
+          mode: "act",
+          decision: "fallback",
+          tier: "mid",
+          rejected: outcome.cmd,
+          text: text.slice(0, 500),
+          latency_ms: latencyJev,
+          small_latency_ms: latencySmall,
+          input_tokens: usage?.input_tokens,
+          answers,
+        });
+        if (ctx.ui)
+          ctx.ui.setStatus(
+            "jev",
+            `unsafe command rejected → big (${latencyJev + latencySmall}ms)`,
+          );
+        return { action: "continue" };
+      }
       const { output, failed } = await runCommand(cmd);
       if (failed) {
         // The command exists but failed on this system (bad flags, missing
