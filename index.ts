@@ -453,13 +453,13 @@ export default function (pi: ExtensionAPI) {
       // Locally-handled inputs are NOT recorded by pi (handled = agent loop
       // skipped), so the injected trace also carries the user's prompt to
       // keep the session transcript and LLM context coherent.
-      const injectTrace = (label: string, content: string) => {
+      const injectTrace = (label: string, content: string, maxChars = cfg.injectMaxChars) => {
         if (!cfg.injectLocalResults) return;
         try {
           pi.sendMessage(
             {
               customType: "jev-router",
-              content: `[jev-router] ${label}\n> ${text.slice(0, 200)}\n${content.slice(0, cfg.injectMaxChars)}${content.length > cfg.injectMaxChars ? "\n…(truncated)" : ""}`,
+              content: `[jev-router] ${label}\n> ${text.slice(0, 200)}\n${content.slice(0, maxChars)}${content.length > maxChars ? "\n…(truncated)" : ""}`,
               display: true,
               details: {},
             },
@@ -545,7 +545,8 @@ export default function (pi: ExtensionAPI) {
           input_tokens: usage?.input_tokens,
           answers,
         });
-        injectTrace("answered locally", outcome.text);
+        // Answers are bounded (~max_tokens) — show the full text in the trace.
+        injectTrace("answered locally", outcome.text, 4000);
         if (ctx.ui) {
           ctx.ui.setStatus("jev", `answered · ${latencyJev + latencySmall}ms`);
           // The injected trace already displays the answer — notify only
@@ -590,7 +591,9 @@ export default function (pi: ExtensionAPI) {
       injectTrace(`executed locally\n$ ${cmd}`, output);
       if (ctx.ui) {
         ctx.ui.setStatus("jev", `local: ${cmd.slice(0, 40)} · ${latencyJev + latencySmall}ms`);
-        if (!cfg.injectLocalResults) {
+        // Notify only when the trace truncated the output — otherwise the
+        // trace is the single display.
+        if (cfg.injectLocalResults && output.length > cfg.injectMaxChars) {
           ctx.ui.notify(`$ ${cmd}\n\n${output.slice(0, 2500) || "(no output)"}`, "info");
         }
       }
