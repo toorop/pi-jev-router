@@ -501,7 +501,7 @@ export default function (pi: ExtensionAPI) {
         if (ctx.ui && route) {
           ctx.ui.setStatus(
             "jev",
-            `→ ${route.choice} ${(route.confidence ?? 0).toFixed(2)} · ${latencyJev}ms`,
+            `pass → big (${route.choice} ${(route.confidence ?? 0).toFixed(2)}) · ${latencyJev}ms`,
           );
         }
         return { action: "continue" };
@@ -531,7 +531,11 @@ export default function (pi: ExtensionAPI) {
           input_tokens: usage?.input_tokens,
           answers,
         });
-        if (ctx.ui) ctx.ui.setStatus("jev", `fallback (${latencyJev + latencySmall}ms)`);
+        if (ctx.ui)
+          ctx.ui.setStatus(
+            "jev",
+            `fallback → big (${route.choice} ${(route.confidence ?? 0).toFixed(2)}) · ${latencyJev + latencySmall}ms`,
+          );
         return { action: "continue" };
       }
 
@@ -551,7 +555,10 @@ export default function (pi: ExtensionAPI) {
         // Answers are bounded (~max_tokens) — show the full text in the trace.
         injectTrace("answered locally", outcome.text, 4000);
         if (ctx.ui) {
-          ctx.ui.setStatus("jev", `answered · ${latencyJev + latencySmall}ms`);
+          ctx.ui.setStatus(
+            "jev",
+            `answered · mid ← ${route.choice} ${(route.confidence ?? 0).toFixed(2)} · ${latencyJev + latencySmall}ms`,
+          );
           // The injected trace already displays the answer — notify only
           // when injection is disabled, to avoid showing it twice.
           if (!cfg.injectLocalResults) ctx.ui.notify(outcome.text.slice(0, 2500), "info");
@@ -575,7 +582,8 @@ export default function (pi: ExtensionAPI) {
           small_latency_ms: latencySmall,
           answers,
         });
-        if (ctx.ui) ctx.ui.setStatus("jev", `exec failed → pass (${latencyJev + latencySmall}ms)`);
+        if (ctx.ui)
+          ctx.ui.setStatus("jev", `exec failed → pass · ${latencyJev + latencySmall}ms`);
         return { action: "continue" };
       }
       await log({
@@ -593,7 +601,10 @@ export default function (pi: ExtensionAPI) {
       });
       injectTrace(`executed locally\n$ ${cmd}`, output);
       if (ctx.ui) {
-        ctx.ui.setStatus("jev", `local: ${cmd.slice(0, 40)} · ${latencyJev + latencySmall}ms`);
+        ctx.ui.setStatus(
+            "jev",
+            `local · ${strictEligible ? "strict" : "mid"} ← ${route.choice} ${(route.confidence ?? 0).toFixed(2)}: ${cmd.slice(0, 30)} · ${latencyJev + latencySmall}ms`,
+          );
         // Notify only when the trace truncated the output — otherwise the
         // trace is the single display.
         if (cfg.injectLocalResults && output.length > cfg.injectMaxChars) {
