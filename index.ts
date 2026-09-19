@@ -55,10 +55,15 @@ const DEFAULTS = {
 };
 
 // Default-deny allowlist of read-only binaries. "git" is subcommand-restricted.
+// Platform-aware: some binaries only exist on some OSes. The availability
+// check at execution time is the real gate; this list just narrows what the
+// small model may propose per platform.
+const LINUX_ONLY = new Set(["free"]);
 const ALLOWED_BINARIES = new Set([
   "ls", "cat", "head", "tail", "grep", "rg", "du", "df", "pwd", "date",
   "wc", "file", "stat", "jq", "which", "whoami", "hostname", "uptime",
-  "free", "ps", "uname", "git", "pgrep", "pidof",
+  "ps", "uname", "git", "pgrep", "pidof",
+  ...(process.platform === "linux" ? [...LINUX_ONLY] : []),
 ]);
 const GIT_SUBCOMMANDS = new Set(["status", "log", "diff", "branch", "remote", "show", "tag"]);
 // Forbidden characters: chains, redirections, substitution, etc.
@@ -239,6 +244,20 @@ async function askJev(
   };
 }
 
+/** Is this binary present on PATH? Cheap, deterministic check. */
+function binaryAvailable(bin: string): boolean {
+  for (const dir of (process.env.PATH ?? "").split(":")) {
+    if (!dir) continue;
+    try {
+      fs.accessSync(path.join(dir, bin), fs.constants.X_OK);
+      return true;
+    } catch {
+      /* not here */
+    }
+  }
+  return false;
+}
+
 /** Strict validation: default-deny. Returns the command or null. */
 function validateCommand(cmd: string): string | null {
   const c = cmd.trim();
@@ -247,6 +266,7 @@ function validateCommand(cmd: string): string | null {
   const tokens = c.split(/\s+/);
   const bin = path.basename(tokens[0]);
   if (!ALLOWED_BINARIES.has(bin)) return null;
+  if (!binaryAvailable(bin)) return null;
   for (const tok of tokens.slice(1)) {
     if (DANGEROUS_TOKENS.has(tok.toLowerCase())) return null;
     if (DANGEROUS_FLAGS.test(tok)) return null;
@@ -355,11 +375,18 @@ async function formulateOrAnswer(
   return { kind: "answer", text: content.replace(/^```[a-z]*\n?|\n?```$/g, "").trim() };
 }
 
-function runCommand(cmd: string): Promise<string> {
+function runCommand(
+  cmd: string,
+): Promise<{ output: string; failed: boolean }> {
   return new Promise((resolve) => {
     exec(cmd, { timeout: 5000, maxBuffer: 512 * 1024 }, (err, stdout, stderr) => {
-      const out = (stdout?.toString() || "") + (stderr?.toString() ? `\n[stderr] ${stderr}` : "");
-      resolve(err ? `${out.trim()}\n[exit ${err.code ?? "?"}]` : out.trim());
+      const out = stdout?.toString() ?? "";
+      // A non-zero exit is only a failure when the tool itself complained
+      // (stderr). grep with no match exits 1 with empty stderr — valid answer.
+      const failed = (err && stderr?.toString().trim().length > 0) || false;
+      const full =
+        out + (stderr?.toString() ? `\n[stderr] ${stderr}` : "") + (err && !failed ? `\n[exit ${err.code ?? "?"}]` : "");
+      resolve({ output: full.trim(), failed });
     });
   });
 }
@@ -519,7 +546,24 @@ export default function (pi: ExtensionAPI) {
       }
 
       const cmd = outcome.cmd;
-      const output = await runCommand(cmd);
+      const { output, failed } = await runCommand(cmd);
+      if (failed) {
+        // The command exists but failed on this system (bad flags, missing
+        // library…). The big model can adapt; log the failed attempt.
+        await log({
+          ts: new Date().toISOString(),
+          mode: "act",
+          decision: "exec_failed",
+          tier: strictEligible ? "strict" : "mid",
+          command: cmd,
+          text: text.slice(0, 500),
+          latency_ms: latencyJev,
+          small_latency_ms: latencySmall,
+          answers,
+        });
+        if (ctx.ui) ctx.ui.setStatus("jev", `exec failed → pass (${latencyJev + latencySmall}ms)`);
+        return { action: "continue" };
+      }
       await log({
         ts: new Date().toISOString(),
         mode: "act",
