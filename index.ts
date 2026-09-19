@@ -450,13 +450,16 @@ export default function (pi: ExtensionAPI) {
 
       const conf = route?.confidence ?? 0;
 
+      // Locally-handled inputs are NOT recorded by pi (handled = agent loop
+      // skipped), so the injected trace also carries the user's prompt to
+      // keep the session transcript and LLM context coherent.
       const injectTrace = (label: string, content: string) => {
         if (!cfg.injectLocalResults) return;
         try {
           pi.sendMessage(
             {
               customType: "jev-router",
-              content: `[jev-router] ${label}\n${content.slice(0, cfg.injectMaxChars)}${content.length > cfg.injectMaxChars ? "\n…(truncated)" : ""}`,
+              content: `[jev-router] ${label}\n> ${text.slice(0, 200)}\n${content.slice(0, cfg.injectMaxChars)}${content.length > cfg.injectMaxChars ? "\n…(truncated)" : ""}`,
               display: true,
               details: {},
             },
@@ -542,7 +545,7 @@ export default function (pi: ExtensionAPI) {
           input_tokens: usage?.input_tokens,
           answers,
         });
-        injectTrace(`answered locally:\n${outcome.text}`, outcome.text);
+        injectTrace("answered locally", outcome.text);
         if (ctx.ui) {
           ctx.ui.setStatus("jev", `answered · ${latencyJev + latencySmall}ms`);
           ctx.ui.notify(outcome.text.slice(0, 2500), "info");
@@ -582,7 +585,7 @@ export default function (pi: ExtensionAPI) {
         input_tokens: usage?.input_tokens,
         answers,
       });
-      injectTrace(`executed locally: ${cmd}`, output);
+      injectTrace(`executed locally\n$ ${cmd}`, output);
       if (ctx.ui) {
         ctx.ui.setStatus("jev", `local: ${cmd.slice(0, 40)} · ${latencyJev + latencySmall}ms`);
         ctx.ui.notify(`$ ${cmd}\n\n${output.slice(0, 2500) || "(no output)"}`, "info");
