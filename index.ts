@@ -469,12 +469,17 @@ export default function (pi: ExtensionAPI) {
 
       const strictEligible =
         route?.choice === "no_llm" && conf >= cfg.confidenceGate && noul >= cfg.noulGate;
+      const category = answers.category?.choice ?? "";
       const midEligible =
         !strictEligible &&
         cfg.midTier &&
         (route?.choice === "no_llm" || route?.choice === "small_task") &&
         conf >= cfg.smallTaskGate &&
-        ["command", "question"].includes(answers.category?.choice ?? "");
+        // "chat" is allowed only when a single command would suffice
+        // (e.g. "dis moi la date" gets categorized chat with a flat
+        // distribution, but noul=0.72 says a command covers it).
+        (["command", "question"].includes(category) ||
+         (category === "chat" && noul >= cfg.noulGate));
 
       if (!strictEligible && !midEligible) {
         await log({
