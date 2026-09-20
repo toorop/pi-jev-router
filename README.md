@@ -8,9 +8,9 @@ Read this first, because the original pitch was wrong. **pi already handles `!co
 
 What pi does *not* give you is the bridge between those two worlds:
 
-- You type a **natural-language intention** ("montre-moi les 10 dernières lignes du log", "et les fichiers cachés ?") — `!` requires you to already know the command.
+- You type a **natural-language intention** ("show me the last 10 lines of the log", "and the hidden files?") — `!` requires you to already know the command.
 - The router turns that intention into **one validated read-only command**, executed in under a second, with **zero tokens on your frontier model**, and the output lands in your session context for later turns.
-- Knowledge questions ("c'est quoi la différence entre --hard et --soft ?") get answered by a cheap small model instead of a full frontier turn.
+- Knowledge questions ("what's the difference between --hard and --soft?") get answered by a cheap small model instead of a full frontier turn.
 
 Everything else — rich coding requests, ambiguity, reasoning — **passes through to your normal model unchanged**. The router can only make things faster or equal, never worse.
 
@@ -63,7 +63,7 @@ One parallel Jev call (~1000 input tokens, ~300–500 ms, ~$0.00004) carries fiv
 
 Worth reading in full, because the router adds providers pi doesn't use. Three data flows, stated precisely:
 
-- **Everything you type goes to TypeSafe (Jev), every turn** — that is the router's function: it cannot classify what it doesn't see. Your input plus up to 6 recent conversation messages (each truncated to ~300 chars), including casual replies like "oui". If you don't want a sentence to reach TypeSafe, don't type it while the router is enabled (`/jev-router:toggle` stops even that).
+- **Everything you type goes to TypeSafe (Jev), every turn** — that is the router's function: it cannot classify what it doesn't see. Your input plus up to 6 recent conversation messages (each truncated to ~300 chars), including casual replies like "yes". If you don't want a sentence to reach TypeSafe, don't type it while the router is enabled (`/jev-router:toggle` stops even that).
 - **Mid-tier requests go to OpenRouter** (the small model), with that same recent context.
 - **Outputs of router-executed commands go nowhere near Jev or the small model.** They are shown to you and injected into the session (your frontier model sees them, like pi's native `!cmd`) — but the recent-conversation context sent to TypeSafe/OpenRouter carries only the command line, never its output.
 - **Fragments of your normal model's tool results may reach Jev** via the recent-conversation context (the last 6 session entries, ~300 chars each) — same information your frontier model already sees, but going to an extra provider. This is inherent to context-aware routing; the router-specific hole (its own command outputs recirculating) is the one closed above.

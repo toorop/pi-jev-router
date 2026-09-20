@@ -175,7 +175,7 @@ export function decide(answers: JevAnswer, cfg: RouterConfig): Tier {
   if (strict) return "strict";
 
   // "chat" is allowed into the mid tier only when a single command would
-  // suffice (e.g. "dis moi la date": categorized chat with a flat
+  // suffice (e.g. "tell me the date": categorized chat with a flat
   // distribution, but noul 0.72 says a command covers it).
   const mid =
     cfg.midTier &&
