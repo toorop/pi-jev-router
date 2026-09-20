@@ -126,7 +126,8 @@ Tests: `npm test` (Node ≥ 22.6, no dependencies).
 ## Commands
 
 - **`/jev:stats`** — stats for **today** (local timezone); `/jev:stats all` or `/jev:stats 2026-09-20` for other periods. Shadow and act are reported **separately** — never mix them.
-- **`/jev:toggle`** — instantly disable/enable routing without leaving pi.
+- **`/jev:mode`** — switch `shadow` ↔ `act` (persists to config.json); `/jev:mode shadow` or `/jev:mode act` to set explicitly. Takes effect on the next input, no restart needed.
+- **`/jev:toggle`** — instantly disable/enable routing entirely (kill switch, not persisted).
 
 ## Reading the stats
 

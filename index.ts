@@ -708,6 +708,41 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // /jev:mode         → toggle shadow <-> act
+  // /jev:mode shadow  → force shadow (log only, never dispatch)
+  // /jev:mode act     → force act (actually dispatch)
+  // Persists to config.json so the mode survives restarts.
+  pi.registerCommand("jev:mode", {
+    description: "Switch routing mode: shadow <-> act (args: shadow | act)",
+    handler: async (args: string, ctx: ExtensionContext) => {
+      const arg = (args ?? "").trim().toLowerCase();
+      let cfg: RouterConfig;
+      try {
+        cfg = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) };
+      } catch {
+        cfg = { ...DEFAULTS };
+      }
+      if (arg === "shadow" || arg === "act") {
+        cfg.mode = arg;
+      } else if (arg) {
+        ctx.ui.notify(`jev-router: unknown mode '${args.trim()}' — use 'shadow' or 'act'`, "warning");
+        return;
+      } else {
+        cfg.mode = cfg.mode === "act" ? "shadow" : "act";
+      }
+      try {
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+        ctx.ui.notify(
+          `jev-router mode: ${cfg.mode}${cfg.mode === "act" ? " (dispatches — latency budget " + cfg.deadlineMs + "ms)" : " (log only, always pass-through)"}`,
+          "info",
+        );
+      } catch (e: any) {
+        // config not writable → apply for this session only, say so
+        ctx.ui.notify(`jev-router mode: ${cfg.mode} (this session only — config write failed: ${e?.message ?? e})`, "warning");
+      }
+    },
+  });
+
   pi.registerCommand("jev:stats", {
     description: "Routing statistics (default: today — args: all | YYYY-MM-DD)",
     handler: async (args: string, ctx: ExtensionContext) => {
