@@ -2,182 +2,171 @@
 
 A [TypeSafe Jev](https://docs.typesafe.ai)-powered intent router for the [pi coding agent](https://github.com/badlogic/pi-mono).
 
-**⚠️ READ THIS FIRST — shadow mode is the default.** Out of the box, this extension changes *nothing* about how pi behaves. Every input is routed by Jev in the background and logged, but every turn still goes to your normal model. It looks like it "does nothing" — that is intentional. Read [Recommended rollout](#recommended-rollout) before enabling act mode.
+## The honest premise
 
-## Who this is for — and who it's not for
+Read this first, because the original pitch was wrong. **pi already handles `!command` natively** (output goes to the model) and `!!command` (output not sent). So "typing `ls -la` costs a full frontier-model turn" was never quite the problem: prefix with `!` and it doesn't.
 
-Be honest with yourself here; the economics only work for some workflows.
+What pi does *not* give you is the bridge between those two worlds:
 
-**It pays when your inputs are imperative and heterogeneous:**
-- You drive pi with short commands ("relance les tests", "git status", "commit ça", "montre le diff")
-- You use voice input, which naturally produces short imperative requests
-- You run automated flows through pi (CI bots, scripts, pipelines) where volume × per-turn cost matters
-- You mix commands and knowledge questions and want both answered in under a second
+- You type a **natural-language intention** ("montre-moi les 10 dernières lignes du log", "et les fichiers cachés ?") — `!` requires you to already know the command.
+- The router turns that intention into **one validated read-only command**, executed in under a second, with **zero tokens on your frontier model**, and the output lands in your session context for later turns.
+- Knowledge questions ("c'est quoi la différence entre --hard et --soft ?") get answered by a cheap small model instead of a full frontier turn.
 
-**It will rarely fire — and is not worth running — if:**
-- Your inputs are rich natural-language requests and *the model* does the tooling as part of its reasoning. Commands the big model issues during a turn never pass through this router; it only sees *your* input.
-- Your sessions are almost entirely multi-step coding work.
+Everything else — rich coding requests, ambiguity, reasoning — **passes through to your normal model unchanged**. The router can only make things faster or equal, never worse.
 
-**The rule:** run it in shadow mode for a real work week, then look at `/jev:stats`. If locally-handleable turns are under ~15% of your inputs, keep it in shadow or uninstall it — the fail-safe design guarantees you lose nothing by keeping it, but the numbers should decide. This router earns its keep on *distribution*, and only your logs know your distribution.
-
-Outside the harness, the same Jev pattern (cheap calibrated classification before expensive generation) shines in high-volume automation: issue triage, webhook classification, comment moderation, batch log analysis. That is where per-decision cost actually compounds.
-
-## The problem
-
-In an agentic harness like pi, typing a trivial request such as `ls -la` still costs a full frontier-model turn: the system prompt, the tool definitions, the entire session history, and several seconds of latency — just so the LLM can decide to call the `bash` tool.
-
-pi-jev-router puts a fast, structured decision layer **before** the big model: Jev (a "System One" model — no text generation, just calibrated decisions) classifies each input, and only the turns that actually need reasoning reach the big model.
+**It will rarely fire if** your sessions are conversational and multi-step (measured: 1.6% of turns were locally handleable on a real conversational session). Run it in shadow mode for a real work week and let `/jev:stats` decide — see [Reading the stats](#reading-the-stats).
 
 ## How it works
 
-Every user input triggers **one parallel Jev call** (~700 input tokens, ~300 ms, ~$0.00003) with five typed questions:
-
-| Question | Type | Returns |
-|---|---|---|
-| `route` | Choice | `no_llm` / `small_task` / `reasoning` / `clarify` + full probability distribution + confidence |
-| `no_judgment` | Noul | probability that a single read-only shell command fully satisfies the request |
-| `clarity` | Score | ambiguity of the request |
-| `complexity` | Score | how much work it involves |
-| `category` | Choice | command / question / code_change / debug / research / chat / other |
-
-Based on the answer, the request is dispatched:
+Every user input can be handled at four tiers, cheapest first:
 
 ```
-Jev answers
+input
 │
-├─ route=no_llm, confidence ≥ 0.9, noul ≥ 0.7          [strict tier]
-│     → small LLM formulates ONE read-only command
-│     → validated against a default-deny allowlist
-│     → executed locally, output shown, agent loop never starts
+├─ L0 (free)          raw text IS a validated read-only command
+│                     → validateCommand(raw) → execute. Zero model calls.
+│                     (only fires when your text is literally the command;
+│                      "git status" → executed, "git status please" → L1)
 │
-├─ (no_llm | small_task), confidence ≥ 0.6,            [mid tier]
-│  category ∈ {command, question} (or chat with high noul)
-│     → small LLM sees the recent conversation + previous local
-│       executions, then either:
-│       • "!<command>"  → validated + executed locally
-│       • a direct answer → displayed + injected into session context
-│       • "NONE"        → fall through to the big model
+├─ strict tier        Jev: no_llm, conf ≥ 0.9, noul ≥ 0.7
+│                     → small LLM formulates ONE command
+│                     → strict validation → execute locally
 │
-└─ everything else (clarify, reasoning, low confidence, rejected commands)
-      → pass through to your normal pi model (unchanged behavior)
+├─ mid tier           conf ≥ 0.6, category dispatchable, context-aware
+│                     → small LLM: validated command OR direct answer
+│                       (answers are shown with an explicit "unverified"
+│                       mention and are NEVER injected into the session)
+│
+└─ pass               everything else → your normal pi model, unchanged
 ```
+
+One parallel Jev call (~1000 input tokens, ~300–500 ms, ~$0.00004) carries five typed questions: `route`, `no_judgment` (noul), `clarity`, `complexity`, `category`.
 
 ### Judgment vs. policy
 
-A key mental model: **Jev does not dispatch — it judges.** Each question measures a *semantic property of the request itself* (can a single command suffice? how ambiguous? what kind of thing is it?). What turns those judgments into a dispatch decision is **this extension's policy layer**: the gates, the tier structure, and the allowlist.
+**Jev does not dispatch — it judges.** Each question measures a semantic property of the request. What turns judgments into dispatch decisions is the policy layer (`decide()` in `lib.ts`): the gates, the tier structure, the allowlist. Changing policy never touches Jev; confidence stays a pure signal about the request; thresholds are your risk policy, calibratable against your own logs.
 
-```
-Jev judgment                      →  policy (this code)                →  handler
-noul ≥ 0.7, conf ≥ 0.9            →  "commandable with certainty"      →  strict local execution
-conf ≥ 0.6, category dispatchable →  "probably commandable"            →  mid tier (small LLM)
-everything else                   →  "too risky or too rich"           →  your normal model
-```
+## Design principles
 
-This separation has three consequences worth knowing:
-
-1. **Changing routing policy never touches Jev.** When we discovered that `category: chat` requests with high `noul` should reach the mid tier, the fix was one line of policy — not a prompt change. A fork with a different pipeline (no small model, for instance) reuses the same Jev judgments with a different dispatch table.
-2. **Confidence stays a pure signal about the request.** If Jev classified "local / small / big" directly, its confidence would conflate two things: doubt about the request, and doubt about your infrastructure. Separated, it stays interpretable.
-3. **The thresholds are your risk policy.** They live in `config.json` precisely so you can calibrate them against your own logs without touching the judgment layer.
-
-### Design principles
-
-- **Fail-safe, always.** Every failure path (Jev unreachable, small model down, a command that fails validation) falls through to your normal model. The router can only make things *faster or equal*, never worse.
-- **Default-deny command validation — on every tier.** The small model's command is checked against a fixed allowlist of read-only binaries (`ls`, `cat`, `tail`, `grep`, `du`, `git status`, …), with forbidden characters (`; | & > < $ ( )`), forbidden tokens (`rm`, `sudo`, `bash`, `xargs`, …), and dangerous flags (`--exec`, `--delete`, …). This applies to the mid tier too — a hole where mid-tier commands skipped validation was caught in testing precisely because the *small model's own refusal* had been the only guard. Never rely on that.
-- **The local tier is context-blind; the mid tier is not.** Local execution cannot know what was said earlier in the session — that's why confidence below the strict gate goes to the mid tier (context-aware) instead of straight to the big model.
+- **Fail-safe, always.** Every failure path (Jev unreachable, small model down, validation refused, deadline exceeded) falls through to your normal model. In act mode the whole dispatch races a **latency budget** (`deadlineMs`, default 1200 ms): losing the race means immediate pass-through. Nothing an entry adds before your model starts exceeds the budget.
+- **Default-deny command validation — on every tier, including L0.** Fixed allowlist of read-only binaries, git subcommand-restricted, forbidden characters (`; | & > < $ ( )` and newlines), dangerous tokens, dangerous flags. A mid-tier hole where commands skipped validation was caught in testing precisely because the small model's own refusal had been the only guard. Never rely on that.
+- **Sensitive paths are denied outright.** `~/.ssh/**`, `~/.pi/agent/auth.json`, `.env*`, `*.env`, `/proc/*/environ`, `*credential*`, `id_rsa`/`id_ed25519`/`id_ecdsa`, `.git-credentials` — no allowlisted binary may point at them. Also blocked: `git -c` (config overrides like `core.fsmonitor=<cmd>` execute arbitrary binaries).
+- **Command outputs never recirculate to any model.** Router traces contribute only the prompt quote and the command line to the recent-conversation context — never their output. Without this, a locally-executed `cat` would silently send its output to TypeSafe (and, via the mid tier, to the small-model provider) on the next call.
+- **Unverified prose never enters session context.** Mid-tier direct answers are displayed with an explicit `[unverified answer from local small model]` mention and are never injected; only validated command executions are injected as traces.
+- **Trust gating.** With `requireTrustedProject`, all local execution is refused in a project explicitly marked untrusted in `~/.pi/agent/trust.json` (fail-open when no saved decision exists, matching pi's own semantics — format read best-effort, marked unverified in docs/plan.md).
+- **pi native commands are never intercepted.** Inputs starting with `/`, `!`, `!!` go to pi's own flow untouched.
 - **Session coherence.** Locally-handled turns are injected back into the session as a compact trace (including a quote of your prompt), so later big-model turns know what already happened — without triggering a turn. Append-only, so prompt caching is unaffected.
-- **The big model is never configured here.** It stays whatever pi uses (`/model`). Only the small model is configured in this extension's config.
-- **OS-portable by fallback, not by enumeration.** Availability of a binary is checked on PATH before execution, the allowlist is platform-aware (`free` is Linux-only, …), and a command that exists but fails on the local system (GNU vs BSD flag differences, missing libraries…) falls through to the big model, which can adapt.
-- **This router does not add permission controls.** It only dispatches. On the pass path, your requests go to the model exactly as they would without it. If you want destructive-command gating (confirm before `rm`, `sudo`, …), that is a separate concern at the `tool_call` level — see pi's `confirm-destructive` extension example.
+- **The big model is never configured here.** It stays whatever pi uses (`/model`).
+- **OS-portable by fallback, not by enumeration.** Binary availability is checked on PATH at execution time; a command that exists but fails on this system falls through to the big model, which can adapt.
+
+## Security & privacy — what leaves your machine
+
+Worth reading in full, because the router adds providers pi doesn't use:
+
+- **Everything you type goes to TypeSafe** (Jev): your input plus up to 6 recent conversation messages, every turn. That includes casual replies like "oui". This is the contract of the tool.
+- **Mid-tier requests go to OpenRouter** (the small model), including that same recent context.
+- **Command outputs go nowhere**: they stay local and are shown/injected in your session, but are filtered out of everything sent to Jev or the small model (see design principles).
+- **Router executions bypass pi's `tool_call` event.** If you run a permission guard (e.g. a confirm-destructive extension), it will NOT see commands executed by this router. The router only dispatches; it adds no permission controls. Its own defense is the default-deny validation above — not a sandbox.
+- **The routing log** (`~/.pi/agent/jev-router/log.jsonl`) contains your raw requests and stays on your machine (gitignored).
+- Keys: TypeSafe from env/`~/.pi/agent/jev-router/.env`, OpenRouter reused from pi's `auth.json`. Never logged, never committed.
 
 ## Install
 
-Requirements:
-- [pi](https://github.com/badlogic/pi-mono) with at least one provider authenticated (the OpenRouter key in `~/.pi/agent/auth.json` is reused for the small model)
-- A [TypeSafe API key](https://console.typesafe.ai/keys)
+Requirements: [pi](https://github.com/badlogic/pi-mono) with at least one provider authenticated, and a [TypeSafe API key](https://console.typesafe.ai/keys).
 
 ```bash
-# 1. Clone this repo
-git clone https://github.com/<you>/pi-jev-router.git
+# Option A: pi package install (package.json carries the pi manifest)
+pi install git:toorop/pi-jev-router
 
-# 2. Symlink it into pi's global extensions (or copy it)
+# Option B: manual symlink
 ln -s "$(pwd)/pi-jev-router/index.ts" ~/.pi/agent/extensions/jev-router/index.ts
-mkdir -p ~/.pi/agent/extensions/jev-router
 
-# 3. Provide your TypeSafe key (either way works)
+# TypeSafe key (either way)
 export TYPESAFE_API_KEY=...                 # in your shell profile
 # or
 mkdir -p ~/.pi/agent/jev-router
 echo "TYPESAFE_API_KEY=..." > ~/.pi/agent/jev-router/.env
 
-# 4. Create your config (never committed, see .gitignore)
 cp config.example.json ~/.pi/agent/jev-router/config.json
-
-# 5. Restart pi
 ```
 
 On startup you should see: `jev-router loaded — mode: shadow, small: google/gemini-2.5-flash, key: found`.
 
+Tests: `npm test` (Node ≥ 22.6, no dependencies).
+
 ## Recommended rollout
 
-Do **not** jump straight to act mode. The economics of this router depend on *your* distribution of trivial vs. non-trivial turns, and only your logs can tell you whether the gates are right for you.
-
-1. **Stay in shadow mode** (the default) and work normally for a session or two — ideally a real work week. The status bar shows each routing decision; nothing else changes.
-2. Run **`/jev:stats`** — route distribution, decisions by tier, average confidence, latency percentiles, cumulative Jev cost, and the number of turns that would have been handled locally.
-3. If the numbers look right, edit `~/.pi/agent/jev-router/config.json` and set `"mode": "act"`.
-4. Watch for `fallback` decisions (a command the small model proposed but validation rejected) — each one is logged with the rejected command; tighten or extend the allowlist accordingly.
+1. **Stay in shadow mode** (the default) and work normally — the status bar shows each routing decision; nothing else changes. Shadow also *simulates* the L0 free tier in the log (`decision: handled_local, tier: l0, simulated: true`) so you can measure the free-tier opportunity rate before enabling it.
+2. Run **`/jev:stats`** after a real session.
+3. If the local-handleable rate justifies it, set `"mode": "act"` in `~/.pi/agent/jev-router/config.json`.
+4. Watch `fallback` decisions — each logs the rejected command; tighten the allowlist only deliberately.
 
 ## Configuration
 
-`~/.pi/agent/jev-router/config.json` (all fields optional, defaults in `config.example.json`):
+`~/.pi/agent/jev-router/config.json` (all optional, defaults in `config.example.json`):
 
 | Field | Default | Meaning |
 |---|---|---|
-| `mode` | `"shadow"` | `"shadow"`: route + log only, always pass through. `"act"`: actually dispatch |
-| `smallModel` | `google/gemini-2.5-flash` | OpenRouter model id used to formulate commands / answer mid-tier questions |
-| `disableReasoning` | `true` | send `reasoning: {exclude: true}` — no thinking tokens on a formulation task |
-| `confidenceGate` | `0.9` | minimum route confidence for the strict tier |
-| `noulGate` | `0.7` | minimum `no_judgment` for the strict tier |
-| `smallTaskGate` | `0.6` | minimum confidence for the mid tier |
+| `mode` | `"shadow"` | `"shadow"`: route + log only. `"act"`: actually dispatch |
+| `smallModel` | `google/gemini-2.5-flash` | OpenRouter model id for formulation/answers |
+| `disableReasoning` | `true` | no thinking tokens on a formulation task |
+| `confidenceGate` | `0.9` | min route confidence for the strict tier |
+| `noulGate` | `0.7` | min `no_judgment` for the strict tier (and chat→mid) |
+| `smallTaskGate` | `0.6` | min confidence for the mid tier |
 | `midTier` | `true` | enable the context-aware middle tier |
+| `deadlineMs` | `1200` | latency budget: Jev + formulation raced against this; on loss → pass-through |
+| `jevTimeoutMs` | `3000` | Jev HTTP timeout (background cap after a deadline loss) |
 | `smallModelTimeoutMs` | `10000` | small model request timeout |
-| `injectLocalResults` | `true` | inject a trace of locally-handled turns into session context |
+| `l0` | `true` | free tier: raw text validated and executed with zero model calls |
+| `requireTrustedProject` | `true` | refuse all local execution in explicitly untrusted projects |
+| `scanToolResults` | `true` | shadow experiment 7A: log-only tool_result size/origin scan |
+| `injectLocalResults` | `true` | inject a trace of locally-handled commands into session context |
 | `injectMaxChars` | `500` | max injected characters for command output traces |
 
 ## Commands
 
-- **`/jev:stats`** — aggregate the log: routes, decisions by tier, confidence, latency p50/p95, cumulative Jev cost
-- **`/jev:toggle`** — instantly disable/enable routing without leaving pi
+- **`/jev:stats`** — stats for **today** (local timezone); `/jev:stats all` or `/jev:stats 2026-09-20` for other periods. Shadow and act are reported **separately** — never mix them.
+- **`/jev:toggle`** — instantly disable/enable routing without leaving pi.
+
+## Reading the stats
+
+Example (real session):
+
+```
+jev-router — 2026-09-20 (62 log entries, 0 errors)
+[act] 62 routed — local rate 1.6% (1 avoided big-model turns)
+  route:    reasoning:27  clarify:24  small_task:8  no_llm:3
+  decision: pass:61  handled_local:1
+  confidence hist: 0.0:12  0.1:8  0.2:9  ...
+  noul hist:       ...
+  latency p50/p95: 428/843 ms
+  Jev in: 62,341 tokens → est. cost $0.0026
+  paid turns after pass: 40 turns · 1.2M in (+210k cache-read) · $3.42 real cost
+```
+
+How to read it, honestly:
+
+- **local rate** is the number that decides the project. Under ~15%: keep shadow or uninstall.
+- **paid turns after pass** is the real cost of the turns the router let through — compare it against what local handling avoided.
+- **confidence/noul histograms** exist for one purpose: place gates in distribution troughs, never on a cluster (see Calibration).
+- **latency p50/p95** is added latency on *every* routed input — in act mode bounded by `deadlineMs`.
+
+## Calibration
+
+Current gates (`confidenceGate` 0.9, `noulGate` 0.7, `smallTaskGate` 0.6) were set during development (September 2026) from a small corpus; the measured distributions are too sparse to justify a move. Re-calibrate after a shadow-mode work week: place each gate in a trough of its histogram, never on a cluster — Jev probabilities wobble slightly between identical calls, so a threshold sitting on a frontier is a coin flip. Replay a corpus at least three times before citing a rate. Record threshold + date + justifying measurement in the code comment (`lib.ts`) and here.
+
+Real calibration lessons so far: knowledge-question answers are cheap to correct (mid-tier gate 0.6, not 0.7); `chat` + high noul is a command in disguise; anaphora without context is correctly a `clarify`; phrasing and arithmetic belong to the big model.
 
 ## Known UX differences in act mode
 
-- **Your prompt is quoted, not echoed.** pi does not record inputs that an extension handles (handled = agent loop skipped), so the injected trace carries your prompt as a quoted line (`> your request`). It stays visible in the transcript and in the LLM context — but inside the `[jev-router]` block rather than as a native user message. pi offers no way to record a user message without triggering a turn (`sendUserMessage` always triggers one).
-- **The footer tells you everything.** Every branch displays its decision in the status bar: `local · strict ← no_llm 0.97: date · 450ms`, `answered · mid ← small_task 0.71 · 2984ms`, `pass → big (clarify 0.92) · 385ms`. The `←` shows the Jev judgment that fed the decision.
-
-## Calibration lessons (real cases from development)
-
-These are the cases that shaped the current gates — useful templates for calibrating yours:
-
-- **Same request, different confidence.** "c'est quoi la différence entre --hard et --soft" scored 0.71, then 0.67, then 0.68 across sessions — right on the original 0.7 gate. Lesson: knowledge-question *answers* are cheap to correct (ask again), unlike wrongly-executed commands — so the mid-tier gate was lowered to 0.6 while command safety stays gated elsewhere.
-- **`chat` + high `noul` = a command in disguise.** "dis moi la date" was categorized `chat` with a flat distribution, but `noul` 0.72 said a single command would do. The mid tier now accepts `chat` when `noul` is high.
-- **Phrasing and arithmetic belong to the big model.** "donne-moi la date *en la formulant dans une phrase*" and "combien de jours entre aujourd'hui et l'an 2000" scored low `noul` (0.49, 0.5) — a command alone genuinely does not satisfy them. The router passed both, correctly. This matches Jev's documented limits: it does not generate prose, and it does not do math.
-- **Anaphora without context is a clarify.** "montre-moi les 10 dernières lignes de *ce fichier*" in a fresh session: Jev detects the missing referent even though it has no conversation context. With context (mid tier sees the traces), the same pattern resolves correctly.
-- **A destructive request can fool the router's first line.** "supprime le fichier /tmp/test.txt" scored `no_llm` 0.75. The small model refused on its own (read-only mandate), and the command-validation layer caught it — after the fix described above. Triple defense: Jev's gates, the small model's mandate, the allowlist. Each can fail; none is alone responsible.
+- **Your prompt is quoted, not echoed** for locally-handled turns: pi does not record inputs an extension handles, so the injected trace carries your prompt as a quoted line (`> your request`) inside the `[jev-router]` block.
+- **Mid-tier answers display, but don't enter context.** Later turns don't "know" the answer — by design: it's unverified small-model prose. Ask again or let the big model answer.
+- **The footer tells you everything**: `local · l0: git status · 3ms`, `local · strict ← no_llm 0.97: date · 450ms`, `pass → big (deadline 1200ms)`, `fallback → big (…)`.
+- **Shadow inputs are never dropped.** An input arriving while a Jev call is in flight is routed and logged anyway (this used to be silently discarded, biasing exactly the short-burst population the router targets).
 
 ## What you should expect
 
-Measured on a real dev session (your numbers will differ — that's why shadow mode exists):
-
-- Jev routing call: ~700 tokens, ~300 ms (p50), ~$0.00003 per call
-- Small-model formulation: ~100–200 tokens, ~150 ms
-- Strict-eligible turns (trivial commands): handled in < 1 s total, **zero tokens on your big model**
-- Mid-tier answers: ~1–3 s, a few hundred tokens on the small model instead of a full frontier turn
-- One benchmark: `git status` routed at confidence 0.99; an anaphoric follow-up ("*et* les fichiers cachés ?") correctly dropped to 0.78 → mid tier
-
-## Privacy
-
-- The routing log (`~/.pi/agent/jev-router/log.jsonl`) contains your raw requests — it stays on your machine and is gitignored
-- Your TypeSafe key is read from the environment or `~/.pi/agent/jev-router/.env` — never hardcoded
-- The OpenRouter key is reused from pi's own `auth.json` — nothing new to configure
+Measured, real numbers (2026-09-20, act session): Jev routing ~1000 tokens, p50 428 ms / p95 843 ms, $0.00004/call; locally-handled commands < 1 s total with zero frontier tokens; mid-tier answers 1–3 s on the small model. In act mode, added latency before your normal model starts is bounded by `deadlineMs`.
 
 ## License
 

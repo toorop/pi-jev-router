@@ -4,9 +4,14 @@
   "disableReasoning": true,
   "confidenceGate": 0.9,
   "noulGate": 0.7,
-  "smallTaskGate": 0.7,
+  "smallTaskGate": 0.6,
   "midTier": true,
+  "deadlineMs": 1200,
+  "jevTimeoutMs": 3000,
   "smallModelTimeoutMs": 10000,
+  "l0": true,
+  "requireTrustedProject": true,
+  "scanToolResults": true,
   "injectLocalResults": true,
   "injectMaxChars": 500
 }
