@@ -27,7 +27,7 @@
  *   - executions bypass pi's tool_call event: permission guards don't see
  *     them (documented, by design — the router only dispatches)
  *
- * Commands: /jev:stats [today|all|YYYY-MM-DD], /jev:toggle
+ * Commands: /jev-router:stats [today|all|YYYY-MM-DD], /jev-router:mode, /jev-router:toggle
  * Key resolution: $TYPESAFE_API_KEY → ~/.pi/agent/jev-router/.env
  * OpenRouter key: reused from pi's ~/.pi/agent/auth.json
  */
@@ -700,7 +700,7 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.registerCommand("jev:toggle", {
+  pi.registerCommand("jev-router:toggle", {
     description: "Enable/disable jev-router routing",
     handler: async (_args: string, ctx: ExtensionContext) => {
       enabled = !enabled;
@@ -708,11 +708,11 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // /jev:mode         → toggle shadow <-> act
-  // /jev:mode shadow  → force shadow (log only, never dispatch)
-  // /jev:mode act     → force act (actually dispatch)
+  // /jev-router:mode         → toggle shadow <-> act
+  // /jev-router:mode shadow  → force shadow (log only, never dispatch)
+  // /jev-router:mode act     → force act (actually dispatch)
   // Persists to config.json so the mode survives restarts.
-  pi.registerCommand("jev:mode", {
+  pi.registerCommand("jev-router:mode", {
     description: "Switch routing mode: shadow <-> act (args: shadow | act)",
     handler: async (args: string, ctx: ExtensionContext) => {
       const arg = (args ?? "").trim().toLowerCase();
@@ -743,7 +743,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("jev:stats", {
+  pi.registerCommand("jev-router:stats", {
     description: "Routing statistics (default: today — args: all | YYYY-MM-DD)",
     handler: async (args: string, ctx: ExtensionContext) => {
       let lines: string[] = [];

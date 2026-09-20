@@ -14,7 +14,7 @@ What pi does *not* give you is the bridge between those two worlds:
 
 Everything else — rich coding requests, ambiguity, reasoning — **passes through to your normal model unchanged**. The router can only make things faster or equal, never worse.
 
-**It will rarely fire if** your sessions are conversational and multi-step (measured: 1.6% of turns were locally handleable on a real conversational session). Run it in shadow mode for a real work week and let `/jev:stats` decide — see [Reading the stats](#reading-the-stats).
+**It will rarely fire if** your sessions are conversational and multi-step (measured: 1.6% of turns were locally handleable on a real conversational session). Run it in shadow mode for a real work week and let `/jev-router:stats` decide — see [Reading the stats](#reading-the-stats).
 
 ## How it works
 
@@ -97,7 +97,7 @@ Tests: `npm test` (Node ≥ 22.6, no dependencies).
 ## Recommended rollout
 
 1. **Stay in shadow mode** (the default) and work normally — the status bar shows each routing decision; nothing else changes. Shadow also *simulates* the L0 free tier in the log (`decision: handled_local, tier: l0, simulated: true`) so you can measure the free-tier opportunity rate before enabling it.
-2. Run **`/jev:stats`** after a real session.
+2. Run **`/jev-router:stats`** after a real session.
 3. If the local-handleable rate justifies it, set `"mode": "act"` in `~/.pi/agent/jev-router/config.json`.
 4. Watch `fallback` decisions — each logs the rejected command; tighten the allowlist only deliberately.
 
@@ -125,9 +125,9 @@ Tests: `npm test` (Node ≥ 22.6, no dependencies).
 
 ## Commands
 
-- **`/jev:stats`** — stats for **today** (local timezone); `/jev:stats all` or `/jev:stats 2026-09-20` for other periods. Shadow and act are reported **separately** — never mix them.
-- **`/jev:mode`** — switch `shadow` ↔ `act` (persists to config.json); `/jev:mode shadow` or `/jev:mode act` to set explicitly. Takes effect on the next input, no restart needed.
-- **`/jev:toggle`** — instantly disable/enable routing entirely (kill switch, not persisted).
+- **`/jev-router:stats`** — stats for **today** (local timezone); `/jev-router:stats all` or `/jev-router:stats 2026-09-20` for other periods. Shadow and act are reported **separately** — never mix them.
+- **`/jev-router:mode`** — switch `shadow` ↔ `act` (persists to config.json); `/jev-router:mode shadow` or `/jev-router:mode act` to set explicitly. Takes effect on the next input, no restart needed.
+- **`/jev-router:toggle`** — instantly disable/enable routing entirely (kill switch, not persisted).
 
 ## Reading the stats
 
