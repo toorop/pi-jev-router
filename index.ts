@@ -12,8 +12,9 @@
  *     → small LLM formulates ONE read-only command → strict validation →
  *     execute, show output, agent loop never starts
  *   mid: context-aware small LLM formulates a validated command; direct
- *     prose answers are shown to the user with an explicit "unverified"
- *     mention and are NEVER injected into session context.
+ *     prose answers are injected into session context with an explicit
+ *     "unverified" mention (so the big model has them at the next turn),
+ *     and are also displayed to the user.
  *   pass: everything else → normal pi model, unchanged behavior.
  *
  * Latency budget: in act mode Jev + small-model formulation race against
@@ -22,7 +23,9 @@
  * Security posture (router-internal, independent of user-installed guards):
  *   - default-deny command validation on every tier, including L0
  *   - sensitive-path denylist (keys, credentials, .env, auth.json, /proc)
- *   - command outputs are NEVER sent back to Jev or the small model
+ *   - router-injected content (command outputs, small-model answers) is
+ *     NEVER sent back to Jev or the small model via recentMessages()
+ *     redaction — only the label, prompt quote and command line recirculate
  *   - optional trust.json gating of all local execution
  *   - executions bypass pi's tool_call event: permission guards don't see
  *     them (documented, by design — the router only dispatches)
@@ -603,19 +606,30 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (outcome.kind === "answer") {
-        // Middle tier, prose answer. NEVER injected into session context:
-        // it is unverifiable small-model prose, and anything injected is
-        // later read by the big model as fact. Displayed with an explicit
-        // unverified mention instead. (Mission step 3, option B.)
+        // Middle tier, prose answer. Injected into session context with an
+        // explicit UNVERIFIED mention: the big model must have the answer at
+        // the next turn (it was requested, so it is useful context), but it
+        // must also read it as unverified small-model prose, not as fact.
+        // The small-model answer does NOT recirculate to Jev / the small
+        // model: recentMessages() redaction keeps only the label line, the
+        // prompt quote and command lines from jev-router entries.
         await log({ ...baseLog, decision: "answered_local", tier: "mid", small_latency_ms: latencySmall });
-        if (ctx.ui) {
+        injectTrace(
+          cfg,
+          text,
+          "answered by small model (UNVERIFIED — shown as-is, not fact-checked)",
+          outcome.text,
+        );
+        if (ctx.ui && cfg.injectLocalResults && outcome.text.length > cfg.injectMaxChars) {
           ctx.ui.notify(
-            `[unverified answer from local small model]\n${outcome.text.slice(0, 2500)}`,
+            `answer truncated in session context (${outcome.text.length} > ${cfg.injectMaxChars} chars)`,
             "info",
           );
+        }
+        if (ctx.ui) {
           ctx.ui.setStatus(
             "jev",
-            `answered · mid (unverified) ← ${route?.choice ?? "?"} · ${latencyJev + latencySmall}ms`,
+            `answered · mid (unverified, injected) ← ${route?.choice ?? "?"} · ${latencyJev + latencySmall}ms`,
           );
         }
         return { action: "handled" };

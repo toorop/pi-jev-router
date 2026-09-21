@@ -34,8 +34,9 @@ input
 │
 ├─ mid tier           conf ≥ 0.6, category dispatchable, context-aware
 │                     → small LLM: validated command OR direct answer
-│                       (answers are shown with an explicit "unverified"
-│                       mention and are NEVER injected into the session)
+│                       (answers are injected into the session with an
+│                       explicit "unverified" mention, so the big model
+│                       has them at the next turn)
 │
 └─ pass               everything else → your normal pi model, unchanged
 ```
@@ -52,10 +53,10 @@ One parallel Jev call (~1000 input tokens, ~300–500 ms, ~$0.00004) carries fiv
 - **Default-deny command validation — on every tier, including L0.** Fixed allowlist of read-only binaries, git subcommand-restricted, forbidden characters (`; | & > < $ ( )` and newlines), dangerous tokens, dangerous flags. A mid-tier hole where commands skipped validation was caught in testing precisely because the small model's own refusal had been the only guard. Never rely on that.
 - **Sensitive paths are denied outright.** `~/.ssh/**`, `~/.pi/agent/auth.json`, `.env*`, `*.env`, `/proc/*/environ`, `*credential*`, `id_rsa`/`id_ed25519`/`id_ecdsa`, `.git-credentials` — no allowlisted binary may point at them. Also blocked: `git -c` (config overrides like `core.fsmonitor=<cmd>` execute arbitrary binaries).
 - **Router command outputs never recirculate to Jev or the small model.** Router traces contribute only the prompt quote and the command line to the recent-conversation context — never their output. (Your frontier model does see them via the injected trace, exactly like pi's native `!cmd`.) Without this, a locally-executed `cat` would silently send its output to TypeSafe (and, via the mid tier, to the small-model provider) on the next call.
-- **Unverified prose never enters session context.** Mid-tier direct answers are displayed with an explicit `[unverified answer from local small model]` mention and are never injected; only validated command executions are injected as traces.
+- **Small-model answers never recirculate to Jev or the small model.** Mid-tier answers are injected into session context with an explicit `[jev-router] answered by small model (UNVERIFIED …)` mention — your frontier model reads them at the next turn — but the recent-conversation context sent to TypeSafe/OpenRouter carries only the label line and the prompt quote, never the answer text itself.
 - **Trust gating.** With `requireTrustedProject`, all local execution is refused in a project explicitly marked untrusted in `~/.pi/agent/trust.json` (fail-open when no saved decision exists, matching pi's own semantics — format read best-effort, marked unverified in docs/plan.md).
 - **pi native commands are never intercepted.** Inputs starting with `/`, `!`, `!!` go to pi's own flow untouched.
-- **Session coherence.** Locally-handled turns are injected back into the session as a compact trace (including a quote of your prompt), so later big-model turns know what already happened — without triggering a turn. Append-only, so prompt caching is unaffected.
+- **Session coherence.** Locally-handled turns are injected back into the session as a compact trace (including a quote of your prompt), so later big-model turns know what already happened — without triggering a turn. Mid-tier small-model answers are injected the same way, marked UNVERIFIED. Append-only, so prompt caching is unaffected.
 - **The big model is never configured here.** It stays whatever pi uses (`/model`).
 - **OS-portable by fallback, not by enumeration.** Binary availability is checked on PATH at execution time; a command that exists but fails on this system falls through to the big model, which can adapt.
 
@@ -65,7 +66,7 @@ Worth reading in full, because the router adds providers pi doesn't use. Three d
 
 - **Everything you type goes to TypeSafe (Jev), every turn** — that is the router's function: it cannot classify what it doesn't see. Your input plus up to 6 recent conversation messages (each truncated to ~300 chars), including casual replies like "yes". If you don't want a sentence to reach TypeSafe, don't type it while the router is enabled (`/jev-router:toggle` stops even that).
 - **Mid-tier requests go to OpenRouter** (the small model), with that same recent context.
-- **Outputs of router-executed commands go nowhere near Jev or the small model.** They are shown to you and injected into the session (your frontier model sees them, like pi's native `!cmd`) — but the recent-conversation context sent to TypeSafe/OpenRouter carries only the command line, never its output.
+- **Router outputs go nowhere near Jev or the small model.** Command outputs and mid-tier small-model answers are shown to you and injected into the session (your frontier model sees them, like pi's native `!cmd`) — but the recent-conversation context sent to TypeSafe/OpenRouter carries only the command line (for commands) or the label + prompt quote (for answers), never the content itself.
 - **Fragments of your normal model's tool results may reach Jev** via the recent-conversation context (the last 6 session entries, ~300 chars each) — same information your frontier model already sees, but going to an extra provider. This is inherent to context-aware routing; the router-specific hole (its own command outputs recirculating) is the one closed above.
 - **Router executions bypass pi's `tool_call` event.** If you run a permission guard (e.g. a confirm-destructive extension), it will NOT see commands executed by this router. The router only dispatches; it adds no permission controls. Its own defense is the default-deny validation above — not a sandbox.
 - **The routing log** (`~/.pi/agent/jev-router/log.jsonl`) contains your raw requests and stays on your machine (gitignored).
@@ -121,8 +122,8 @@ Tests: `npm test` (Node ≥ 22.6, no dependencies).
 | `l0` | `true` | free tier: raw text validated and executed with zero model calls |
 | `requireTrustedProject` | `true` | refuse all local execution in explicitly untrusted projects |
 | `scanToolResults` | `true` | shadow experiment 7A: log-only tool_result size/origin scan |
-| `injectLocalResults` | `true` | inject a trace of locally-handled commands into session context |
-| `injectMaxChars` | `500` | max injected characters for command output traces |
+| `injectLocalResults` | `true` | inject a trace of locally-handled commands and mid-tier answers into session context |
+| `injectMaxChars` | `500` | max injected characters for command output and answer traces |
 
 ## Commands
 
@@ -162,7 +163,7 @@ Real calibration lessons so far: knowledge-question answers are cheap to correct
 ## Known UX differences in act mode
 
 - **Your prompt is quoted, not echoed** for locally-handled turns: pi does not record inputs an extension handles, so the injected trace carries your prompt as a quoted line (`> your request`) inside the `[jev-router]` block.
-- **Mid-tier answers display, but don't enter context.** Later turns don't "know" the answer — by design: it's unverified small-model prose. Ask again or let the big model answer.
+- **Mid-tier answers enter context, marked unverified.** Injected with an explicit UNVERIFIED mention so later big-model turns have the answer (it was requested — it is context) while knowing it is unverified small-model prose. The answer text itself never reaches Jev or the small model again (see above).
 - **The footer tells you everything**: `local · l0: git status · 3ms`, `local · strict ← no_llm 0.97: date · 450ms`, `pass → big (deadline 1200ms)`, `fallback → big (…)`.
 - **Shadow inputs are never dropped.** An input arriving while a Jev call is in flight is routed and logged anyway (this used to be silently discarded, biasing exactly the short-burst population the router targets).
 
