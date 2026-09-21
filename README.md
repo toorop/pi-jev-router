@@ -61,7 +61,7 @@ One parallel Jev call (~1000 input tokens, ~300–500 ms, ~$0.00004) carries fiv
 - **Trust gating.** With `requireTrustedProject`, all local execution — and the small-turn tier — is refused in a project explicitly marked untrusted in `~/.pi/agent/trust.json` (fail-open when no saved decision exists, matching pi's own semantics — format read best-effort, marked unverified in docs/plan.md).
 - **pi native commands are never intercepted.** Inputs starting with `/`, `!`, `!!` go to pi's own flow untouched.
 - **Session coherence.** Locally-handled turns are injected back into the session as a compact trace (including a quote of your prompt), so later big-model turns know what already happened — without triggering a turn. Mid-tier small-model answers are injected the same way, marked UNVERIFIED. Append-only, so prompt caching is unaffected.
-- **The small turn is the only tier with tool access — opt-in, bounded, and visible.** `smallTurn: true` lets Jev-dispatched quick tasks (`small_task`, task category, conf ≥ `smallTurnGate`) run as a **real pi turn** on `smallTurnModel`: full session, tools, edits possible. Unlike router executions, its tool calls go through pi's normal `tool_call` events, so your permission guards see them. Model, thinking level and tools (`smallTurnTools`) are restored on `agent_settled`; if you switch models manually during a small turn, the restore is skipped. Default off because it is the router's only tier where a model can mutate your project.
+- **The small turn is the only tier with tool access — opt-in, bounded, and visible.** `smallTurn: true` lets Jev-dispatched quick tasks (`small_task`, task category, conf ≥ `smallTurnGate`) run as a **real pi turn** on `smallTurnModel`: full session, tools, edits possible (see [The two small models](#the-two-small-models-dont-confuse-them) for how this differs from the mid-tier one-shot model). Unlike router executions, its tool calls go through pi's normal `tool_call` events, so your permission guards see them. Model, thinking level and tools (`smallTurnTools`) are restored on `agent_settled`; if you switch models manually during a small turn, the restore is skipped. Default off because it is the router's only tier where a model can mutate your project.
 - **The big model is never configured here.** It stays whatever pi uses (`/model`).
 - **OS-portable by fallback, not by enumeration.** Binary availability is checked on PATH at execution time; a command that exists but fails on this system falls through to the big model, which can adapt.
 
@@ -98,9 +98,29 @@ echo "TYPESAFE_API_KEY=..." > ~/.pi/agent/jev-router/.env
 cp config.example.json ~/.pi/agent/jev-router/config.json
 ```
 
-On startup you should see: `jev-router loaded — mode: shadow, small: google/gemini-2.5-flash, key: found`.
+On startup you should see:
+
+```
+jev-router loaded — mode: shadow, small: google/gemini-2.5-flash, smallturn: google/gemini-2.5-flash, key: found
+```
 
 Tests: `npm test` (Node ≥ 22.6, no dependencies).
+
+## The two small models (don't confuse them)
+
+The config has **two distinct small models with two very different roles**. They can be the same model id — that's a coincidence of defaults, not the same mechanism:
+
+| | `smallModel` (mid tier) | `smallTurnModel` (small tier, opt-in) |
+|---|---|---|
+| **Role** | One-shot *exécutant*: formulates ONE read-only command, or answers one question | *Turn carrier*: does the task — a real pi turn |
+| **Called how** | Direct HTTP to OpenRouter, outside the session | `pi.setModel()` — pi runs the turn natively |
+| **Sees** | Your request + last ~6 messages (~300 chars each) | The full session, like your frontier model would |
+| **Tools** | None. Its only possible outputs: a command (validated before execution) or a short answer | Whatever tools are active (`smallTurnTools` can restrict them) — including edits |
+| **In session context** | Answer injected, marked `UNVERIFIED` | Its whole turn, natively — nothing to inject |
+| **Afterwards** | Nothing to clean up | Model, thinking level and tools restored automatically |
+| **Default** | On (part of `midTier`) | Off (`smallTurn: false`) — the only tier where a model can mutate your project |
+
+Startup line cheat-sheet: `mode:` is shadow/act; `small:` is the mid-tier one-shot model; `smallturn:` is the small-turn carrier (`off` when disabled); `key:` is the TypeSafe/Jev key.
 
 ## Recommended rollout
 
@@ -116,7 +136,7 @@ Tests: `npm test` (Node ≥ 22.6, no dependencies).
 | Field | Default | Meaning |
 |---|---|---|
 | `mode` | `"shadow"` | `"shadow"`: route + log only. `"act"`: actually dispatch |
-| `smallModel` | `google/gemini-2.5-flash` | OpenRouter model id for formulation/answers |
+| `smallModel` | `google/gemini-2.5-flash` | OpenRouter model id for one-shot formulation/answers (mid tier — never carries a turn) |
 | `disableReasoning` | `true` | no thinking tokens on a formulation task |
 | `confidenceGate` | `0.9` | min route confidence for the strict tier |
 | `noulGate` | `0.7` | min `no_judgment` for the strict tier (and chat→mid) |
@@ -124,7 +144,7 @@ Tests: `npm test` (Node ≥ 22.6, no dependencies).
 | `midTier` | `true` | enable the context-aware middle tier |
 | `smallTurn` | `false` | opt-in: dispatch quick tasks as a real turn on the small model |
 | `smallTurnGate` | `0.7` | min route confidence for the small-turn tier |
-| `smallTurnModel` | `google/gemini-2.5-flash` | pi-registry model carrying the small turn (`provider/id` or bare id) |
+| `smallTurnModel` | `google/gemini-2.5-flash` | pi-registry model carrying small turns as real pi turns — a different mechanism from `smallModel` (see [The two small models](#the-two-small-models-dont-confuse-them)) |
 | `smallTurnTools` | `null` | `null` keeps your active tools for the small turn; an array restricts them for that turn |
 | `deadlineMs` | `1200` | latency budget: Jev + formulation raced against this; on loss → pass-through |
 | `jevTimeoutMs` | `3000` | Jev HTTP timeout (background cap after a deadline loss) |
