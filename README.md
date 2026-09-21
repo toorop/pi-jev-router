@@ -122,6 +122,14 @@ The config has **two distinct small models with two very different roles**. They
 
 Startup line cheat-sheet: `mode:` is shadow/act; `small:` is the mid-tier one-shot model; `smallturn:` is the small-turn carrier (`off` when disabled); `key:` is the TypeSafe/Jev key.
 
+### Two requests, two paths
+
+**"What's the date, formatted like *Saturday 13 October*?"** → **mid tier, the one-shot `smallModel`.** A question about current state, not a task. The one-shot model doesn't *know* today's date (and would make one up) — so it formulates a command instead, e.g. `date '+%A %d %B'`. The command is validated and executed locally: the date you see comes from **your system's `date` binary**, never from model prose. The trace lands in session context for later turns.
+
+**"Write me a small bash script that prints the date formatted this way whenever I call it"** → **small tier (`smallTurnModel`), if Jev judges it `small_task` + `code_change` at conf ≥ `smallTurnGate`.** Creating a file requires write access — impossible for the mid tier (read-only by design). Only a real pi turn can do it: the small-turn model gets tools, writes the script, and its turn lands natively in the session. If Jev instead judges the request `reasoning` (multi-step, or too much judgment), it goes to your big model — the gate deciding this is `smallTurnGate`, not the model.
+
+The dividing line, in one sentence: **the one-shot model *answers about* your system; the small-turn model *changes* it.**
+
 ## Recommended rollout
 
 1. **Stay in shadow mode** (the default) and work normally — the status bar shows each routing decision; nothing else changes. Shadow also *simulates* the L0 free tier in the log (`decision: handled_local, tier: l0, simulated: true`) so you can measure the free-tier opportunity rate before enabling it.
