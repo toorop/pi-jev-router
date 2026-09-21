@@ -15,6 +15,11 @@ export interface RouterConfig {
   noulGate: number;
   smallTaskGate: number;
   midTier: boolean;
+  // Small-turn tier (opt-in): dispatch a REAL pi turn to the small model.
+  smallTurn: boolean;
+  smallTurnGate: number;
+  smallTurnModel: string;
+  smallTurnTools: string[] | null;
   deadlineMs: number;
   jevTimeoutMs: number;
   smallModelTimeoutMs: number;
@@ -34,6 +39,18 @@ export const DEFAULTS: RouterConfig = {
   smallModelTimeoutMs: 10000,
   injectLocalResults: true,
   injectMaxChars: 500,
+  // Small-turn tier (OPT-IN, default off): Jev small_task + a task-like
+  // category at smallTurnGate dispatches a REAL pi turn to smallTurnModel
+  // (resolved from pi's model registry via pi.setModel). This is the
+  // router's first tier that gives a model tool access (read/edit/write/
+  // bash for that turn) — everything else the router does is read-only.
+  // Model, thinking level and tools are restored after the turn.
+  smallTurn: false,
+  smallTurnGate: 0.7,
+  smallTurnModel: "google/gemini-2.5-flash",
+  // null keeps the user's active tools for the small turn; an array (e.g.
+  // ["read", "ls", "grep", "find"]) restricts them for that turn only.
+  smallTurnTools: null,
   // Middle tier: when confidence falls below confidenceGate but stays above
   // smallTaskGate, the small LLM (with recent context) either formulates a
   // command or answers directly — the big model is the last resort only.
@@ -161,7 +178,7 @@ export function validateCommand(cmd: string): string | null {
 // Dispatch decision (pure) — Jev judges, this policy dispatches
 // ---------------------------------------------------------------------------
 
-export type Tier = "strict" | "mid" | "pass";
+export type Tier = "strict" | "mid" | "small" | "pass";
 
 export function decide(answers: JevAnswer, cfg: RouterConfig): Tier {
   const route = answers.route;
@@ -183,7 +200,18 @@ export function decide(answers: JevAnswer, cfg: RouterConfig): Tier {
     conf >= cfg.smallTaskGate &&
     (["command", "question"].includes(category) ||
       (category === "chat" && noul >= cfg.noulGate));
-  return mid ? "mid" : "pass";
+  if (mid) return "mid";
+
+  // Small-turn tier: a REAL pi turn carried by the small model. Fires only
+  // for task-like categories (commands/questions are captured by mid above;
+  // chat and other stay a pass) at a higher gate than mid — a wrong small
+  // turn spends tool calls, not just one wrong sentence.
+  const small =
+    cfg.smallTurn &&
+    route.choice === "small_task" &&
+    conf >= cfg.smallTurnGate &&
+    ["code_change", "debug", "research"].includes(category);
+  return small ? "small" : "pass";
 }
 
 // ---------------------------------------------------------------------------

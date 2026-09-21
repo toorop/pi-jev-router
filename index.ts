@@ -15,6 +15,9 @@
  *     prose answers are injected into session context with an explicit
  *     "unverified" mention (so the big model has them at the next turn),
  *     and are also displayed to the user.
+ *   small (opt-in): Jev small_task + task-like category at smallTurnGate →
+ *     the turn itself is carried by the small model via pi.setModel() — a
+ *     real pi turn with tools; model/thinking/tools restored afterwards.
  *   pass: everything else → normal pi model, unchanged behavior.
  *
  * Latency budget: in act mode Jev + small-model formulation race against
@@ -62,6 +65,14 @@ let openrouterKey: string | null = null;
 let routing = false; // act-mode guard against overlapping input events
 // Decision waiting for its following turn's real cost (pass/fallback paths).
 let pendingTurnCost: { ts: string; mode: string } | null = null;
+// Active small-turn dispatch: saved model/thinking/tools to restore on
+// agent_settled (null when no small turn is in flight).
+let smallTurnRestore: {
+  key: string;
+  model: any;
+  thinking: any;
+  tools: string[] | null;
+} | null = null;
 
 function loadConfig(): RouterConfig {
   try {
@@ -108,6 +119,38 @@ async function log(entry: Record<string, unknown>) {
   } catch {
     /* never break pi because of logging */
   }
+}
+
+/** Resolve cfg.smallTurnModel against pi's model registry. Accepts
+ *  "provider/id" (e.g. "google/gemini-2.5-flash"), "openrouter/vendor/id",
+ *  or a bare model id. Returns the model, or null if unresolvable. */
+function resolveSmallTurnModel(ctx: ExtensionContext, cfg: RouterConfig): any | null {
+  const spec = cfg.smallTurnModel.trim();
+  const reg: any = (ctx as any).modelRegistry;
+  if (!reg?.find) return null;
+  const slash = spec.indexOf("/");
+  if (slash > 0) {
+    const candidates: Array<[string, string]> = [
+      [spec.slice(0, slash), spec.slice(slash + 1)],
+    ];
+    candidates.push(
+      spec.startsWith("openrouter/")
+        ? ["openrouter", spec.slice("openrouter/".length)]
+        : ["openrouter", spec],
+    );
+    for (const [provider, id] of candidates) {
+      try {
+        const m = reg.find(provider, id);
+        if (m) return m;
+      } catch { /* try next */ }
+    }
+  }
+  try {
+    for (const m of reg.getAvailable?.() ?? []) {
+      if (m?.id === spec || `${m?.provider}/${m?.id}` === spec) return m;
+    }
+  } catch { /* registry unavailable */ }
+  return null;
 }
 
 function buildQuestions() {
@@ -385,9 +428,27 @@ export default function (pi: ExtensionAPI) {
     const cfg = loadConfig();
     const hasKey = !!loadTypesafeKey();
     ctx.ui.notify(
-      `jev-router loaded — mode: ${cfg.mode}, small: ${cfg.smallModel}, key: ${hasKey ? "found" : "MISSING"}`,
+      `jev-router loaded — mode: ${cfg.mode}, small: ${cfg.smallModel}, smallturn: ${cfg.smallTurn ? cfg.smallTurnModel : "off"}, key: ${hasKey ? "found" : "MISSING"}`,
       hasKey ? "info" : "warning",
     );
+  });
+
+  // Small-turn restore: after a turn dispatched to the small model settles
+  // (agent_settled = pi won't auto-retry/compact/continue), put the user's
+  // model, thinking level and tools back. Skipped when the user manually
+  // switched models during the turn.
+  pi.on("agent_settled", async (_event: unknown, ctx: ExtensionContext) => {
+    const r = smallTurnRestore;
+    if (!r) return;
+    smallTurnRestore = null;
+    try {
+      const cur: any = (ctx as any).model;
+      if (cur && `${cur.provider}/${cur.id}` !== r.key) return; // user switched away
+      if (r.tools) pi.setActiveTools(r.tools);
+      if (r.model) await pi.setModel(r.model);
+      if (r.thinking) { try { pi.setThinkingLevel(r.thinking); } catch { /* clamp */ } }
+      if (ctx.ui) ctx.ui.setStatus("jev", "small turn done → big model restored");
+    } catch { /* best-effort restore */ }
   });
 
   // Mission step 7A (shadow experiment): log-only scan of tool results —
@@ -568,6 +629,41 @@ export default function (pi: ExtensionAPI) {
             `pass → big (${route.choice} ${(route.confidence ?? 0).toFixed(2)}) · ${latencyJev}ms`,
           );
         }
+        return { action: "continue" };
+      }
+
+      // Small-turn tier: the turn itself is carried by the small model —
+      // a REAL pi turn (full session, tools). Unlike router executions,
+      // its tool calls go through pi's normal tool_call events, so any
+      // permission guard the user runs sees them. Model, thinking level
+      // and tools are restored on agent_settled.
+      if (tier === "small") {
+        const blocked = localExecutionBlocked(ctx.cwd, cfg);
+        const smallModel = blocked ? null : resolveSmallTurnModel(ctx, cfg);
+        if (!smallModel) {
+          await log({ ...baseLog, decision: "fallback", tier, reason: blocked ?? "small_turn_model_unresolved" });
+          pendingTurnCost = { ts: baseLog.ts, mode: "act" };
+          if (ctx.ui) ctx.ui.setStatus("jev", `fallback → big (${blocked ?? "no small-turn model"}) · ${latencyJev}ms`);
+          return { action: "continue" };
+        }
+        const ok = await pi.setModel(smallModel);
+        if (!ok) {
+          await log({ ...baseLog, decision: "fallback", tier, reason: "set_model_refused" });
+          pendingTurnCost = { ts: baseLog.ts, mode: "act" };
+          if (ctx.ui) ctx.ui.setStatus("jev", `fallback → big (no auth for small-turn model) · ${latencyJev}ms`);
+          return { action: "continue" };
+        }
+        const key = `${smallModel.provider}/${smallModel.id}`;
+        smallTurnRestore = {
+          key,
+          model: (ctx as any).model,
+          thinking: (ctx as any).thinkingLevel,
+          tools: cfg.smallTurnTools ? pi.getActiveTools() : null,
+        };
+        if (cfg.disableReasoning) { try { pi.setThinkingLevel("off"); } catch { /* ignore */ } }
+        if (cfg.smallTurnTools) pi.setActiveTools(cfg.smallTurnTools);
+        await log({ ...baseLog, decision: "handled_small_turn", tier, small_model: key });
+        if (ctx.ui) ctx.ui.setStatus("jev", `small turn → ${key} · ${latencyJev}ms`);
         return { action: "continue" };
       }
 

@@ -37,6 +37,10 @@ input
 │                       (answers are injected into the session with an
 │                       explicit "unverified" mention, so the big model
 │                       has them at the next turn)
+├─ small tier (opt-in) small_task + task category, conf ≥ smallTurnGate
+│                     → the turn ITSELF runs on the small model via
+│                       pi.setModel: a real pi turn with tools (edits,
+│                       commands) — model/tools restored afterwards
 │
 └─ pass               everything else → your normal pi model, unchanged
 ```
@@ -54,9 +58,10 @@ One parallel Jev call (~1000 input tokens, ~300–500 ms, ~$0.00004) carries fiv
 - **Sensitive paths are denied outright.** `~/.ssh/**`, `~/.pi/agent/auth.json`, `.env*`, `*.env`, `/proc/*/environ`, `*credential*`, `id_rsa`/`id_ed25519`/`id_ecdsa`, `.git-credentials` — no allowlisted binary may point at them. Also blocked: `git -c` (config overrides like `core.fsmonitor=<cmd>` execute arbitrary binaries).
 - **Router command outputs never recirculate to Jev or the small model.** Router traces contribute only the prompt quote and the command line to the recent-conversation context — never their output. (Your frontier model does see them via the injected trace, exactly like pi's native `!cmd`.) Without this, a locally-executed `cat` would silently send its output to TypeSafe (and, via the mid tier, to the small-model provider) on the next call.
 - **Small-model answers never recirculate to Jev or the small model.** Mid-tier answers are injected into session context with an explicit `[jev-router] answered by small model (UNVERIFIED …)` mention — your frontier model reads them at the next turn — but the recent-conversation context sent to TypeSafe/OpenRouter carries only the label line and the prompt quote, never the answer text itself.
-- **Trust gating.** With `requireTrustedProject`, all local execution is refused in a project explicitly marked untrusted in `~/.pi/agent/trust.json` (fail-open when no saved decision exists, matching pi's own semantics — format read best-effort, marked unverified in docs/plan.md).
+- **Trust gating.** With `requireTrustedProject`, all local execution — and the small-turn tier — is refused in a project explicitly marked untrusted in `~/.pi/agent/trust.json` (fail-open when no saved decision exists, matching pi's own semantics — format read best-effort, marked unverified in docs/plan.md).
 - **pi native commands are never intercepted.** Inputs starting with `/`, `!`, `!!` go to pi's own flow untouched.
 - **Session coherence.** Locally-handled turns are injected back into the session as a compact trace (including a quote of your prompt), so later big-model turns know what already happened — without triggering a turn. Mid-tier small-model answers are injected the same way, marked UNVERIFIED. Append-only, so prompt caching is unaffected.
+- **The small turn is the only tier with tool access — opt-in, bounded, and visible.** `smallTurn: true` lets Jev-dispatched quick tasks (`small_task`, task category, conf ≥ `smallTurnGate`) run as a **real pi turn** on `smallTurnModel`: full session, tools, edits possible. Unlike router executions, its tool calls go through pi's normal `tool_call` events, so your permission guards see them. Model, thinking level and tools (`smallTurnTools`) are restored on `agent_settled`; if you switch models manually during a small turn, the restore is skipped. Default off because it is the router's only tier where a model can mutate your project.
 - **The big model is never configured here.** It stays whatever pi uses (`/model`).
 - **OS-portable by fallback, not by enumeration.** Binary availability is checked on PATH at execution time; a command that exists but fails on this system falls through to the big model, which can adapt.
 
@@ -66,6 +71,7 @@ Worth reading in full, because the router adds providers pi doesn't use. Three d
 
 - **Everything you type goes to TypeSafe (Jev), every turn** — that is the router's function: it cannot classify what it doesn't see. Your input plus up to 6 recent conversation messages (each truncated to ~300 chars), including casual replies like "yes". If you don't want a sentence to reach TypeSafe, don't type it while the router is enabled (`/jev-router:toggle` stops even that).
 - **Mid-tier requests go to OpenRouter** (the small model), with that same recent context.
+- **Small turns give the small-turn model a full view of the session** — it runs as a real pi turn, so it sees everything your frontier model would (that is the point). Data goes to the provider of `smallTurnModel` through pi's own authenticated providers; the router adds no extra copy.
 - **Router outputs go nowhere near Jev or the small model.** Command outputs and mid-tier small-model answers are shown to you and injected into the session (your frontier model sees them, like pi's native `!cmd`) — but the recent-conversation context sent to TypeSafe/OpenRouter carries only the command line (for commands) or the label + prompt quote (for answers), never the content itself.
 - **Fragments of your normal model's tool results may reach Jev** via the recent-conversation context (the last 6 session entries, ~300 chars each) — same information your frontier model already sees, but going to an extra provider. This is inherent to context-aware routing; the router-specific hole (its own command outputs recirculating) is the one closed above.
 - **Router executions bypass pi's `tool_call` event.** If you run a permission guard (e.g. a confirm-destructive extension), it will NOT see commands executed by this router. The router only dispatches; it adds no permission controls. Its own defense is the default-deny validation above — not a sandbox.
@@ -116,6 +122,10 @@ Tests: `npm test` (Node ≥ 22.6, no dependencies).
 | `noulGate` | `0.7` | min `no_judgment` for the strict tier (and chat→mid) |
 | `smallTaskGate` | `0.6` | min confidence for the mid tier |
 | `midTier` | `true` | enable the context-aware middle tier |
+| `smallTurn` | `false` | opt-in: dispatch quick tasks as a real turn on the small model |
+| `smallTurnGate` | `0.7` | min route confidence for the small-turn tier |
+| `smallTurnModel` | `google/gemini-2.5-flash` | pi-registry model carrying the small turn (`provider/id` or bare id) |
+| `smallTurnTools` | `null` | `null` keeps your active tools for the small turn; an array restricts them for that turn |
 | `deadlineMs` | `1200` | latency budget: Jev + formulation raced against this; on loss → pass-through |
 | `jevTimeoutMs` | `3000` | Jev HTTP timeout (background cap after a deadline loss) |
 | `smallModelTimeoutMs` | `10000` | small model request timeout |

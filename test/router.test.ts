@@ -158,6 +158,25 @@ test("mid tier takes dispatchable categories at smallTaskGate", () => {
   assert.equal(decide(ans("reasoning", 0.99, 0.9, "command"), DEFAULTS), "pass");
 });
 
+test("small turn tier is opt-in, task categories only, at smallTurnGate", () => {
+  // Off by default:
+  assert.equal(decide(ans("small_task", 0.95, 0.2, "code_change"), DEFAULTS), "pass");
+  const on = { ...DEFAULTS, smallTurn: true };
+  assert.equal(decide(ans("small_task", 0.95, 0.2, "code_change"), on), "small");
+  assert.equal(decide(ans("small_task", 0.95, 0.2, "debug"), on), "small");
+  assert.equal(decide(ans("small_task", 0.95, 0.2, "research"), on), "small");
+  // Below smallTurnGate → pass:
+  assert.equal(decide(ans("small_task", 0.65, 0.2, "code_change"), on), "pass");
+  // command/question are captured by the mid tier (checked first):
+  assert.equal(decide(ans("small_task", 0.95, 0.9, "command"), on), "mid");
+  assert.equal(decide(ans("small_task", 0.95, 0.2, "question"), on), "mid");
+  // chat and other never dispatch a small turn:
+  assert.equal(decide(ans("small_task", 0.95, 0.2, "chat"), on), "pass");
+  assert.equal(decide(ans("small_task", 0.95, 0.2, "other"), on), "pass");
+  // reasoning route never dispatches either:
+  assert.equal(decide(ans("reasoning", 0.95, 0.2, "code_change"), on), "pass");
+});
+
 test("chat enters mid tier only with high noul", () => {
   assert.equal(decide(ans("small_task", 0.7, 0.72, "chat"), DEFAULTS), "mid");
   assert.equal(decide(ans("small_task", 0.72, 0.2, "chat"), DEFAULTS), "pass");
