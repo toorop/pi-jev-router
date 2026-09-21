@@ -2,19 +2,23 @@
 
 A [TypeSafe Jev](https://docs.typesafe.ai)-powered intent router for the [pi coding agent](https://github.com/badlogic/pi-mono).
 
-## The honest premise
+## Experimental — read this first
 
-Read this first, because the original pitch was wrong. **pi already handles `!command` natively** (output goes to the model) and `!!command` (output not sent). So "typing `ls -la` costs a full frontier-model turn" was never quite the problem: prefix with `!` and it doesn't.
+**This project is an experiment, not a tool.** It ships in shadow mode by default: it routes and logs every decision but changes nothing about how pi runs. The point of the experiment is to measure whether it earns its place at all.
+
+- Run it in shadow mode for a real work week, then let **`/jev-router:stats`** decide: if the locally-handleable rate is low (~15% or under), stay in shadow mode or uninstall — see [Reading the stats](#reading-the-stats).
+- It can only make things faster or equal, never worse: everything it can't handle passes through to your normal model unchanged.
+- And that may mean it should not exist: on a real conversational session, measured, only **1.6% of turns** were locally handleable.
+
+## What it actually adds
+
+Some context, because the original pitch was partly wrong: **pi already handles `!command` natively** (output goes to the model) and `!!command` (output not sent). So "typing `ls -la` costs a full frontier-model turn" was never quite the problem: prefix with `!` and it doesn't.
 
 What pi does *not* give you is the bridge between those two worlds:
 
 - You type a **natural-language intention** ("show me the last 10 lines of the log", "and the hidden files?") — `!` requires you to already know the command.
 - The router turns that intention into **one validated read-only command**, executed in under a second, with **zero tokens on your frontier model**, and the output lands in your session context for later turns.
 - Knowledge questions ("what's the difference between --hard and --soft?") get answered by a cheap small model instead of a full frontier turn.
-
-Everything else — rich coding requests, ambiguity, reasoning — **passes through to your normal model unchanged**. The router can only make things faster or equal, never worse.
-
-**It will rarely fire if** your sessions are conversational and multi-step (measured: 1.6% of turns were locally handleable on a real conversational session). Run it in shadow mode for a real work week and let `/jev-router:stats` decide — see [Reading the stats](#reading-the-stats).
 
 ## How it works
 
@@ -86,8 +90,9 @@ Requirements: [pi](https://github.com/badlogic/pi-mono) with at least one provid
 # Option A: pi package install (package.json carries the pi manifest)
 pi install git:toorop/pi-jev-router
 
-# Option B: manual symlink
-ln -s "$(pwd)/pi-jev-router/index.ts" ~/.pi/agent/extensions/jev-router/index.ts
+# Option B: manual symlink (from inside a clone of this repo)
+mkdir -p ~/.pi/agent/extensions/jev-router
+ln -s "$PWD/index.ts" ~/.pi/agent/extensions/jev-router/index.ts
 
 # TypeSafe key (either way)
 export TYPESAFE_API_KEY=...                 # in your shell profile
@@ -101,7 +106,7 @@ cp config.example.json ~/.pi/agent/jev-router/config.json
 On startup you should see:
 
 ```
-jev-router loaded — mode: shadow, small: google/gemini-2.5-flash, smallturn: google/gemini-2.5-flash, key: found
+jev-router loaded — mode: shadow, small: google/gemini-2.5-flash, smallturn: off, key: found
 ```
 
 Tests: `npm test` (Node ≥ 22.6, no dependencies).
@@ -132,7 +137,7 @@ The dividing line, in one sentence: **the one-shot model *answers about* your sy
 
 ## Recommended rollout
 
-1. **Stay in shadow mode** (the default) and work normally — the status bar shows each routing decision; nothing else changes. Shadow also *simulates* the L0 free tier in the log (`decision: handled_local, tier: l0, simulated: true`) so you can measure the free-tier opportunity rate before enabling it.
+1. **Stay in shadow mode** (the default) and work normally — the status bar shows each routing decision; nothing else changes. The decision rule (how long, what rate, keep or uninstall) is in [Experimental — read this first](#experimental--read-this-first). Shadow also *simulates* the L0 free tier in the log (`decision: handled_local, tier: l0, simulated: true`) so you can measure the free-tier opportunity rate before enabling it.
 2. Run **`/jev-router:stats`** after a real session.
 3. If the local-handleable rate justifies it, set `"mode": "act"` in `~/.pi/agent/jev-router/config.json`.
 4. Watch `fallback` decisions — each logs the rejected command; tighten the allowlist only deliberately.
@@ -159,7 +164,7 @@ The dividing line, in one sentence: **the one-shot model *answers about* your sy
 | `smallModelTimeoutMs` | `10000` | small model request timeout |
 | `l0` | `true` | free tier: raw text validated and executed with zero model calls |
 | `requireTrustedProject` | `true` | refuse all local execution in explicitly untrusted projects |
-| `scanToolResults` | `true` | shadow experiment 7A: log-only tool_result size/origin scan |
+| `scanToolResults` | `true` | shadow experiment: log-only scan of tool_result size/origin (see step 7 in [docs/plan.md](docs/plan.md)) |
 | `injectLocalResults` | `true` | inject a trace of locally-handled commands and mid-tier answers into session context |
 | `injectMaxChars` | `500` | max injected characters for command output and answer traces |
 
